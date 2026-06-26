@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Spark - DAG 与 Stage 可视化</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f6f7f9; color: #20242a; }
+    header { padding: 28px 32px 18px; background: #fff; border-bottom: 1px solid #d8dee8; }
+    h1 { margin: 0 0 8px; font-size: 26px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px; max-width: 1120px; margin: 0 auto; }
+    section { background: #fff; border: 1px solid #d8dee8; border-radius: 8px; box-shadow: 0 10px 26px rgba(22, 34, 51, .08); overflow: hidden; }
+    h2 { margin: 0; padding: 14px 16px; font-size: 16px; border-bottom: 1px solid #d8dee8; background: #fbfcfe; }
+    .body { padding: 16px; }
+    .node { padding: 12px; margin: 8px 0; border: 2px solid #d8dee8; border-radius: 8px; opacity: .35; background: #e7f0ff; }
+    .node.active { opacity: 1; border-color: #2f6fed; }
+    .wide { background: #ffe7e7; }
+    .stage { margin-top: 12px; padding: 12px; border-radius: 8px; background: #e9f8ef; border: 2px solid #168a4a; display: none; }
+    .stage.active { display: block; }
+    .controls { display: flex; gap: 10px; padding: 14px 16px; border-top: 1px solid #d8dee8; background: #fbfcfe; }
+    button { border: 1px solid #b8c6dc; border-radius: 6px; padding: 9px 14px; background: #fff; cursor: pointer; }
+    button.primary { border-color: #2f6fed; background: #2f6fed; color: #fff; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .explain { border: 1px solid #d8dee8; border-radius: 8px; padding: 14px; min-height: 150px; }
+    @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header><h1>DAG 与 Stage 可视化</h1><p>观察窄依赖如何留在同一 Stage，宽依赖如何切开 Stage。</p></header>
+  <main>
+    <section>
+      <h2>DAG</h2>
+      <div class="body">
+        <div class="node" id="n0">0: parallelize (root)</div>
+        <div class="node" id="n1">1: map (narrow)</div>
+        <div class="node" id="n2">2: filter (narrow)</div>
+        <div class="node wide" id="n3">3: shuffle (wide)</div>
+        <div class="node" id="n4">4: reduce_by_key (narrow)</div>
+        <div class="stage" id="s0">Stage 0: parallelize → map → filter</div>
+        <div class="stage" id="s1">Stage 1: shuffle → reduce_by_key</div>
+      </div>
+      <div class="controls"><button id="prev">上一步</button><button class="primary" id="next">下一步</button><button id="reset">重置</button></div>
+    </section>
+    <section><h2>解释</h2><div class="body"><div class="explain"><h3 id="title"></h3><p id="text"></p></div></div></section>
+  </main>
+  <script>
+    const steps = [
+      { nodes: [], stages: [], title: "第 0 步：还没有 DAG", text: "先从 RDD lineage 开始。" },
+      { nodes: ["n0","n1","n2"], stages: ["s0"], title: "第 1 步：窄依赖链", text: "parallelize、map、filter 都能放在同一个 Stage。" },
+      { nodes: ["n0","n1","n2","n3"], stages: ["s0"], title: "第 2 步：遇到宽依赖", text: "shuffle 是宽依赖，它会切开 Stage。" },
+      { nodes: ["n0","n1","n2","n3","n4"], stages: ["s0","s1"], title: "第 3 步：形成两个 Stage", text: "shuffle 后面的 reduce_by_key 进入新的 Stage。" }
+    ];
+    let index = 0;
+    const ids = ["n0","n1","n2","n3","n4"];
+    const stages = ["s0","s1"];
+    function render() {
+      const step = steps[index];
+      ids.forEach(id => document.getElementById(id).classList.toggle("active", step.nodes.includes(id)));
+      stages.forEach(id => document.getElementById(id).classList.toggle("active", step.stages.includes(id)));
+      document.getElementById("title").textContent = step.title;
+      document.getElementById("text").textContent = step.text;
+      document.getElementById("prev").disabled = index === 0;
+      document.getElementById("next").disabled = index === steps.length - 1;
+    }
+    document.getElementById("prev").onclick = () => { if (index > 0) { index -= 1; render(); } };
+    document.getElementById("next").onclick = () => { if (index < steps.length - 1) { index += 1; render(); } };
+    document.getElementById("reset").onclick = () => { index = 0; render(); };
+    render();
+  </script>
+</body>
+</html>
