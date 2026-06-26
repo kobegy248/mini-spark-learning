@@ -1,0 +1,454 @@
+# 《Mini Spark 学习计划》
+
+## 一、项目目标
+
+### 项目名称
+
+**Mini Spark —— 从零理解 Spark 核心原理**
+
+### 项目目标
+
+借助 Claude Code，以"渐进式实现 + 深度讲解"的方式，从零构建一个 Mini Spark，在实现过程中系统学习 Spark 的核心设计思想，而不是停留在 API 的使用层面。
+
+本项目的最终目标不是复制 Apache Spark，而是掌握 Spark 的设计思想，能够：
+
+* 熟练阅读 Spark 源码
+* 理解 Spark 的整体架构
+* 独立分析 Spark 作业性能问题
+* 理解 Spark SQL 的执行流程
+* 理解 Spark 各核心模块之间的协作关系
+* 具备阅读和修改 Spark 源码的能力
+
+---
+
+# 二、学习原则
+
+整个项目遵循以下原则：
+
+## 1. Claude 负责实现
+
+Claude 负责：
+
+* 编写代码
+* 编写测试
+* 编写文档
+* 重构代码
+* 回答问题
+
+## 2. 我负责理解
+
+每完成一步，我必须能够回答：
+
+* 为什么这样设计？
+* 为什么不用其它方案？
+* 如果让我重新设计，我会怎么做？
+* 真实 Spark 是如何实现的？
+
+只有理解完成后，才能进入下一阶段。
+
+---
+
+## 3. 一次只实现一个能力
+
+禁止一次生成完整 Mini Spark。
+
+每次只新增一个最小能力。
+
+例如：
+
+第一步：
+
+RDD
+
+第二步：
+
+map
+
+第三步：
+
+collect
+
+第四步：
+
+filter
+
+……
+
+保持项目始终可运行、可测试。
+
+---
+
+## 4. 对照真实 Spark
+
+每完成一个模块，都需要 Claude 说明：
+
+* 当前实现对应 Spark 哪个模块
+* Spark 为什么实现得更复杂
+* Spark 做了哪些工程优化
+* 当前版本有哪些不足
+
+---
+
+# 三、项目结构
+
+建议采用如下目录：
+
+mini-spark/
+
+├── docs/
+
+│ ├── 01-RDD.md
+
+│ ├── 02-Transformation.md
+
+│ ├── 03-Action.md
+
+│ ├── 04-Lineage.md
+
+│ ├── 05-DAG.md
+
+│ ├── ...
+
+│
+
+├── src/
+
+│
+
+├── test/
+
+│
+
+└── roadmap.md
+
+docs 用于记录学习笔记。
+
+---
+
+# 四、开发路线
+
+## 第一阶段：RDD 基础
+
+目标：
+
+理解 Spark 最核心的数据抽象。
+
+功能：
+
+* SparkContext
+* RDD
+* parallelize
+* collect
+
+学习重点：
+
+* 什么是 RDD
+* 为什么 RDD 不可变
+* 为什么 collect 是 Action
+* Driver 是什么
+
+完成标准：
+
+能够完整讲清 collect 的执行流程。
+
+---
+
+## 第二阶段：Transformation
+
+新增：
+
+* map
+* filter
+* flatMap
+
+学习重点：
+
+* Lazy Evaluation
+* Transformation
+* Iterator
+* 为什么 map 不执行
+
+完成标准：
+
+能够解释：
+
+为什么 map 返回新的 RDD。
+
+---
+
+## 第三阶段：Action
+
+新增：
+
+* count
+* first
+* reduce
+* take
+
+学习重点：
+
+* Action
+* Trigger
+* Execution
+
+完成标准：
+
+能够解释：
+
+为什么 Action 会触发整个 DAG。
+
+---
+
+## 第四阶段：Lineage
+
+新增：
+
+* Parent RDD
+* Dependency
+* Lineage
+
+学习重点：
+
+* Spark 为什么不用复制数据
+* Lineage 如何恢复数据
+
+完成标准：
+
+能够画出 Lineage 图。
+
+---
+
+## 第五阶段：Partition
+
+新增：
+
+* Partition
+* Partition Iterator
+
+学习重点：
+
+* 为什么需要 Partition
+* 并行计算模型
+
+完成标准：
+
+理解 Partition 与 Task 的关系。
+
+---
+
+## 第六阶段：Scheduler
+
+新增：
+
+* Scheduler
+* Task
+* Executor（本地模拟）
+
+学习重点：
+
+* Driver
+* Scheduler
+* Task 调度
+
+完成标准：
+
+能够讲清 Spark Job 的执行过程。
+
+---
+
+## 第七阶段：DAG
+
+新增：
+
+* DAG
+* Stage
+* Dependency
+
+学习重点：
+
+* 宽依赖
+* 窄依赖
+* Stage 划分
+
+完成标准：
+
+能够判断 DAG 如何划分 Stage。
+
+---
+
+## 第八阶段：Shuffle
+
+新增：
+
+* Shuffle Write
+* Shuffle Read
+* Partitioner
+* groupByKey
+* reduceByKey
+
+学习重点：
+
+* Shuffle 原理
+* Map Side Combine
+* 为什么 Shuffle 很慢
+
+完成标准：
+
+能够解释：
+
+为什么 reduceByKey 比 groupByKey 快。
+
+---
+
+## 第九阶段：Cache
+
+新增：
+
+* cache
+* persist
+
+学习重点：
+
+* BlockManager
+* StorageLevel
+* Cache 生命周期
+
+完成标准：
+
+理解 cache 的工作流程。
+
+---
+
+## 第十阶段：Fault Tolerance
+
+新增：
+
+* Executor Crash
+* Lineage Recovery
+
+学习重点：
+
+* 容错机制
+* 重算流程
+
+完成标准：
+
+能够解释 Spark 为什么无需复制数据。
+
+---
+
+## 第十一阶段：Spark SQL
+
+新增：
+
+* SQL Parser
+* Logical Plan
+* Physical Plan
+
+学习重点：
+
+* Catalyst
+* SQL 如何转换为执行计划
+
+完成标准：
+
+理解 SQL → RDD 的完整链路。
+
+---
+
+# 五、每一步 Claude 必须输出
+
+每完成一个模块，都必须输出以下内容：
+
+## 1. 本次目标
+
+本模块解决什么问题。
+
+## 2. 新增类
+
+新增了哪些类。
+
+每个类负责什么。
+
+## 3. 调用流程
+
+用户调用：
+
+↓
+
+API
+
+↓
+
+RDD
+
+↓
+
+Scheduler
+
+↓
+
+Executor
+
+↓
+
+结果返回
+
+画出完整流程图。
+
+## 4. 对应 Spark 源码
+
+指出：
+
+对应 Spark 哪个类。
+
+例如：
+
+RDD.scala
+
+SparkContext.scala
+
+DAGScheduler.scala
+
+TaskScheduler.scala
+
+并说明差异。
+
+## 5. 工程优化
+
+真实 Spark 做了哪些优化。
+
+为什么这样设计。
+
+## 6. 思考题
+
+最后提出 3~5 个思考题，帮助我验证是否真正理解。
+
+---
+
+# 六、学习要求
+
+每完成一个模块，我需要完成以下任务：
+
+* 阅读代码
+* 运行测试
+* 阅读设计说明
+* 画执行流程图
+* 总结学习笔记
+* 回答 Claude 提出的思考题
+
+只有全部完成，才能进入下一阶段。
+
+---
+
+# 七、最终目标
+
+完成整个 Mini Spark 项目后，应具备以下能力：
+
+* 能阅读 Spark 核心源码
+* 能分析 Spark Job 执行流程
+* 能理解 Shuffle 与 Stage 划分
+* 能解释 Spark SQL 执行过程
+* 能定位常见性能问题
+* 能独立设计一个简化版分布式计算框架
+* 达到能够深入理解 Spark 核心原理，而不仅仅是使用 Spark API 的水平。
