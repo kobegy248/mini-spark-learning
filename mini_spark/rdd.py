@@ -58,6 +58,10 @@ class RDD(Generic[T]):
         self._dependency_kind = dependency_kind
         self._num_slices = num_slices
         self._last_job_tasks = []
+        self._cache_enabled = False
+        self._cached_partitions: tuple[tuple[T, ...], ...] | None = None
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     @staticmethod
     def _split_partitions(data: tuple[T, ...], num_slices: int) -> tuple[Partition[T], ...]:
@@ -152,6 +156,23 @@ class RDD(Generic[T]):
     @staticmethod
     def _partition_for_key(key, num_partitions: int) -> int:
         return hash(key) % num_partitions
+
+    def cache(self) -> "RDD[T]":
+        self._cache_enabled = True
+        return self
+
+    def persist(self) -> "RDD[T]":
+        return self.cache()
+
+    def is_cached(self) -> bool:
+        return self._cache_enabled
+
+    def cache_info(self) -> dict[str, int | bool]:
+        return {
+            "enabled": self._cache_enabled,
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+        }
 
     def collect(self) -> list[T]:
         from mini_spark.scheduler import LocalScheduler
@@ -253,6 +274,18 @@ class RDD(Generic[T]):
         return self._parent.num_partitions()
 
     def _compute_partitions(self) -> list[Iterable[T]]:
+        if self._cache_enabled and self._cached_partitions is not None:
+            self._cache_hits += 1
+            return [partition for partition in self._cached_partitions]
+
+        computed = self._compute_partitions_uncached()
+        if self._cache_enabled:
+            self._cache_misses += 1
+            self._cached_partitions = tuple(tuple(partition) for partition in computed)
+            return [partition for partition in self._cached_partitions]
+        return computed
+
+    def _compute_partitions_uncached(self) -> list[Iterable[T]]:
         if self._parent is None:
             if self._partitions is None:
                 raise RuntimeError("Root RDD has no partitions")
