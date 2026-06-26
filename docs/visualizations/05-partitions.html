@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Spark - Partition 可视化</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f6f7f9; color: #20242a; }
+    header { padding: 28px 32px 18px; background: #fff; border-bottom: 1px solid #d8dee8; }
+    h1 { margin: 0 0 8px; font-size: 26px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px; max-width: 1120px; margin: 0 auto; }
+    section { background: #fff; border: 1px solid #d8dee8; border-radius: 8px; box-shadow: 0 10px 26px rgba(22, 34, 51, .08); overflow: hidden; }
+    h2 { margin: 0; padding: 14px 16px; font-size: 16px; border-bottom: 1px solid #d8dee8; background: #fbfcfe; }
+    .body { padding: 16px; }
+    .partition { padding: 14px; margin: 10px 0; border: 2px solid #d8dee8; border-radius: 8px; background: #e7f0ff; opacity: .35; }
+    .partition.active { opacity: 1; border-color: #2f6fed; }
+    .value { display: inline-block; margin: 4px; padding: 6px 10px; border-radius: 6px; background: #fff; border: 1px solid #d8dee8; font-family: Consolas, monospace; }
+    .explain { border: 1px solid #d8dee8; border-radius: 8px; padding: 14px; min-height: 160px; }
+    .controls { display: flex; gap: 10px; padding: 14px 16px; border-top: 1px solid #d8dee8; background: #fbfcfe; }
+    button { border: 1px solid #b8c6dc; border-radius: 6px; padding: 9px 14px; background: #fff; cursor: pointer; }
+    button.primary { border-color: #2f6fed; background: #2f6fed; color: #fff; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Partition 可视化</h1>
+    <p>观察数据如何切成 Partition，以及 map 如何在每个 Partition 内部执行。</p>
+  </header>
+  <main>
+    <section>
+      <h2>分区状态</h2>
+      <div class="body" id="partitions"></div>
+      <div class="controls">
+        <button id="prev">上一步</button>
+        <button class="primary" id="next">下一步</button>
+        <button id="reset">重置</button>
+      </div>
+    </section>
+    <section>
+      <h2>解释</h2>
+      <div class="body">
+        <div class="explain">
+          <h3 id="title"></h3>
+          <p id="text"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const steps = [
+      { title: "第 0 步：普通数据", text: "开始时只有一个普通 Python 列表：[1, 2, 3, 4, 5]。", parts: [] },
+      { title: "第 1 步：parallelize 切成 2 个 Partition", text: "num_slices=2，所以 Mini Spark 把数据尽量平均切成两份。", parts: [[1,2,3], [4,5]] },
+      { title: "第 2 步：map 在每个 Partition 内部执行", text: "每个分区内部的元素都乘以 10，分区数量仍然是 2。", parts: [[10,20,30], [40,50]] },
+      { title: "第 3 步：collect 拍平成一个列表", text: "collect 会按分区顺序把结果拉回 Driver，得到 [10, 20, 30, 40, 50]。", parts: [[10,20,30,40,50]] }
+    ];
+    let index = 0;
+    function render() {
+      const step = steps[index];
+      document.getElementById("title").textContent = step.title;
+      document.getElementById("text").textContent = step.text;
+      document.getElementById("partitions").innerHTML = step.parts.length
+        ? step.parts.map((part, i) => `<div class="partition active"><strong>Partition ${i}</strong><br>${part.map(v => `<span class="value">${v}</span>`).join("")}</div>`).join("")
+        : `<div class="partition active"><strong>Python list</strong><br>${[1,2,3,4,5].map(v => `<span class="value">${v}</span>`).join("")}</div>`;
+      document.getElementById("prev").disabled = index === 0;
+      document.getElementById("next").disabled = index === steps.length - 1;
+    }
+    document.getElementById("prev").onclick = () => { if (index > 0) { index -= 1; render(); } };
+    document.getElementById("next").onclick = () => { if (index < steps.length - 1) { index += 1; render(); } };
+    document.getElementById("reset").onclick = () => { index = 0; render(); };
+    render();
+  </script>
+</body>
+</html>

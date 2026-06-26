@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import chain
 from itertools import islice
 from typing import Generic, TypeVar
 
@@ -13,6 +14,12 @@ class Dependency:
     kind: str
 
 
+@dataclass(frozen=True)
+class Partition(Generic[T]):
+    index: int
+    data: tuple[T, ...]
+
+
 class RDD(Generic[T]):
     """A tiny immutable local RDD for learning Spark's execution model."""
 
@@ -23,7 +30,10 @@ class RDD(Generic[T]):
         transform: Callable[[Iterable[object]], Iterable[T]] | None = None,
         operation: str | None = None,
         dependency_kind: str = "narrow",
+        num_slices: int = 1,
     ) -> None:
+        if num_slices <= 0:
+            raise ValueError("num_slices must be positive")
         if data is None and parent is None:
             raise ValueError("RDD needs either source data or a parent RDD")
         if data is not None and parent is not None:
@@ -33,11 +43,27 @@ class RDD(Generic[T]):
         if parent is not None and transform is None:
             raise ValueError("Derived RDD needs a transform")
 
-        self._data = tuple(data) if data is not None else None
+        self._partitions = (
+            self._split_partitions(tuple(data), num_slices)
+            if data is not None
+            else None
+        )
         self._parent = parent
         self._transform = transform
         self._operation = operation or ("parallelize" if parent is None else "transform")
         self._dependency_kind = dependency_kind
+
+    @staticmethod
+    def _split_partitions(data: tuple[T, ...], num_slices: int) -> tuple[Partition[T], ...]:
+        base_size, remainder = divmod(len(data), num_slices)
+        partitions: list[Partition[T]] = []
+        start = 0
+        for index in range(num_slices):
+            size = base_size + (1 if index < remainder else 0)
+            end = start + size
+            partitions.append(Partition(index=index, data=data[start:end]))
+            start = end
+        return tuple(partitions)
 
     def map(self, function: Callable[[T], U]) -> "RDD[U]":
         return RDD(
@@ -110,12 +136,39 @@ class RDD(Generic[T]):
             self._parent._append_debug_lines(lines, depth + 1)
 
     def _compute(self) -> Iterable[T]:
+        return chain.from_iterable(self._compute_partitions())
+
+    def collect_partitions(self) -> list[list[T]]:
+        return [list(partition_data) for partition_data in self._compute_partitions()]
+
+    def partitions(self) -> list[Partition[T]]:
         if self._parent is None:
-            if self._data is None:
-                raise RuntimeError("Root RDD has no source data")
-            return self._data
+            if self._partitions is None:
+                raise RuntimeError("Root RDD has no partitions")
+            return list(self._partitions)
+
+        return [
+            Partition(index=index, data=tuple(partition_data))
+            for index, partition_data in enumerate(self._compute_partitions())
+        ]
+
+    def num_partitions(self) -> int:
+        if self._parent is None:
+            if self._partitions is None:
+                raise RuntimeError("Root RDD has no partitions")
+            return len(self._partitions)
+        return self._parent.num_partitions()
+
+    def _compute_partitions(self) -> list[Iterable[T]]:
+        if self._parent is None:
+            if self._partitions is None:
+                raise RuntimeError("Root RDD has no partitions")
+            return [partition.data for partition in self._partitions]
 
         if self._transform is None:
             raise RuntimeError("Derived RDD has no transform")
 
-        return self._transform(self._parent._compute())
+        return [
+            self._transform(parent_partition)
+            for parent_partition in self._parent._compute_partitions()
+        ]

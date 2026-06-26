@@ -9,5 +9,5 @@ T = TypeVar("T")
 class SparkContext:
     """Entry point for creating Mini Spark RDDs."""
 
-    def parallelize(self, data: Iterable[T]) -> RDD[T]:
-        return RDD(data)
+    def parallelize(self, data: Iterable[T], num_slices: int = 1) -> RDD[T]:
+        return RDD(data, num_slices=num_slices)
