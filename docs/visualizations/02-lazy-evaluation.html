@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Spark - Lazy Evaluation 可视化</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #20242a;
+      --muted: #667085;
+      --line: #d8dee8;
+      --root: #e7f0ff;
+      --map: #e9f8ef;
+      --filter: #fff1d8;
+      --flat: #f2e9ff;
+      --action: #ffe7e7;
+      --accent: #2f6fed;
+      --ok: #168a4a;
+      --warn: #b36b00;
+      --shadow: 0 10px 26px rgba(22, 34, 51, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      line-height: 1.6;
+    }
+
+    header {
+      padding: 28px 32px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      line-height: 1.25;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(320px, 0.9fr);
+      gap: 18px;
+      padding: 18px;
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .panel h2 {
+      margin: 0;
+      padding: 14px 16px;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .code {
+      margin: 0;
+      padding: 14px;
+      background: #101828;
+      color: #e6edf7;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
+    .code .active-line {
+      display: block;
+      margin: 0 -8px;
+      padding: 0 8px;
+      border-left: 4px solid #82b1ff;
+      background: rgba(130, 177, 255, 0.18);
+    }
+
+    .rdd-chain {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .node {
+      position: relative;
+      padding: 13px 14px;
+      border: 2px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      transition: border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
+    }
+
+    .node::after {
+      content: "";
+      position: absolute;
+      left: 24px;
+      bottom: -12px;
+      width: 2px;
+      height: 10px;
+      background: var(--line);
+    }
+
+    .node:last-child::after {
+      display: none;
+    }
+
+    .node.inactive {
+      opacity: 0.35;
+    }
+
+    .node.active {
+      border-color: var(--accent);
+      transform: translateX(3px);
+    }
+
+    .node.executing {
+      border-color: var(--ok);
+      box-shadow: inset 0 0 0 1px rgba(22, 138, 74, 0.24);
+    }
+
+    .node.root {
+      background: var(--root);
+    }
+
+    .node.map {
+      background: var(--map);
+    }
+
+    .node.filter {
+      background: var(--filter);
+    }
+
+    .node.flat {
+      background: var(--flat);
+    }
+
+    .node.action {
+      background: var(--action);
+    }
+
+    .node-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+      font-weight: 700;
+    }
+
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.75);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .node-desc {
+      color: #344054;
+      font-size: 14px;
+    }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .state-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+      min-height: 94px;
+    }
+
+    .state-label {
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .value {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 18px;
+      word-break: break-word;
+    }
+
+    .explain {
+      min-height: 170px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #ffffff;
+    }
+
+    .explain h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+
+    .explain p {
+      margin: 8px 0;
+    }
+
+    .flow {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .flow-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--line);
+    }
+
+    .flow-step.done {
+      color: var(--text);
+    }
+
+    .flow-step.done .dot {
+      background: var(--ok);
+    }
+
+    .flow-step.current {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .flow-step.current .dot {
+      background: var(--accent);
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    button {
+      border: 1px solid #b8c6dc;
+      border-radius: 6px;
+      padding: 9px 14px;
+      background: #ffffff;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #ffffff;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .note {
+      margin-top: 12px;
+      padding: 12px;
+      border-left: 4px solid var(--warn);
+      background: #fff8eb;
+      color: #5d4200;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 22px 18px 14px;
+      }
+
+      .state-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lazy Evaluation 可视化：为什么 map 不会马上执行</h1>
+    <p class="subtitle">点击“下一步”，观察 RDD 链如何先记录转换，直到 collect 才真正计算。</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>代码与 RDD 链</h2>
+      <div class="panel-body">
+        <pre class="code" id="codeBlock"></pre>
+
+        <div class="rdd-chain" aria-label="RDD chain">
+          <div class="node root" id="node-root">
+            <div class="node-title">Root RDD <span class="badge">source</span></div>
+            <div class="node-desc">保存原始数据：_data = (1, 2, 3, 4)</div>
+          </div>
+          <div class="node map inactive" id="node-map">
+            <div class="node-title">map RDD <span class="badge">lazy</span></div>
+            <div class="node-desc">只记录：每个 value 乘以 2</div>
+          </div>
+          <div class="node filter inactive" id="node-filter">
+            <div class="node-title">filter RDD <span class="badge">lazy</span></div>
+            <div class="node-desc">只记录：保留大于 4 的 value</div>
+          </div>
+          <div class="node flat inactive" id="node-flat">
+            <div class="node-title">flat_map RDD <span class="badge">lazy</span></div>
+            <div class="node-desc">只记录：每个 value 变成 [value, value + 1]</div>
+          </div>
+          <div class="node action inactive" id="node-action">
+            <div class="node-title">collect <span class="badge">action</span></div>
+            <div class="node-desc">触发整条 RDD 链真正执行</div>
+          </div>
+        </div>
+      </div>
+      <div class="controls">
+        <button id="prevButton">上一步</button>
+        <button class="primary" id="nextButton">下一步</button>
+        <button id="resetButton">重置</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>当前状态</h2>
+      <div class="panel-body">
+        <div class="state-grid">
+          <div class="state-box">
+            <div class="state-label">当前数据</div>
+            <div class="value" id="dataValue">-</div>
+          </div>
+          <div class="state-box">
+            <div class="state-label">calls 记录</div>
+            <div class="value" id="callsValue">[]</div>
+          </div>
+        </div>
+
+        <div class="explain">
+          <h3 id="stepTitle"></h3>
+          <p id="stepText"></p>
+          <div class="note" id="stepNote"></div>
+        </div>
+
+        <div class="flow" id="flow"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const codeLines = [
+      "from mini_spark import SparkContext",
+      "",
+      "sc = SparkContext()",
+      "rdd = (",
+      "    sc.parallelize([1, 2, 3, 4])",
+      "    .map(lambda value: value * 2)",
+      "    .filter(lambda value: value > 4)",
+      "    .flat_map(lambda value: [value, value + 1])",
+      ")",
+      "",
+      "print(rdd.collect())"
+    ];
+
+    const steps = [
+      {
+        title: "第 0 步：还没有开始",
+        activeLine: -1,
+        activeNodes: [],
+        executingNodes: [],
+        data: "-",
+        calls: "[]",
+        text: "此时还没有创建任何 RDD。你可以把右侧状态看成空白纸。",
+        note: "重点：先不要急着想分布式，这一页只看 RDD 链是怎么被搭起来的。",
+        flowIndex: 0
+      },
+      {
+        title: "第 1 步：创建 SparkContext",
+        activeLine: 2,
+        activeNodes: [],
+        executingNodes: [],
+        data: "-",
+        calls: "[]",
+        text: "SparkContext 是 Mini Spark 的入口。当前阶段它最重要的作用，是提供 parallelize 来创建 RDD。",
+        note: "这里只是创建入口，还没有数据，也没有任何计算。",
+        flowIndex: 1
+      },
+      {
+        title: "第 2 步：parallelize 创建 Root RDD",
+        activeLine: 4,
+        activeNodes: ["root"],
+        executingNodes: [],
+        data: "[1, 2, 3, 4]",
+        calls: "[]",
+        text: "parallelize 把普通 Python 列表包装成 Root RDD。Root RDD 保存源数据：_data = (1, 2, 3, 4)。",
+        note: "这一步只是把数据放进 RDD 对象，还没有 map、filter，也没有 action。",
+        flowIndex: 2
+      },
+      {
+        title: "第 3 步：调用 map，但不执行",
+        activeLine: 5,
+        activeNodes: ["root", "map"],
+        executingNodes: [],
+        data: "[1, 2, 3, 4]",
+        calls: "[]",
+        text: "map 返回一个新的 Derived RDD。它只记录 parent 是谁，以及 transform 是“每个元素乘以 2”。",
+        note: "注意 calls 还是 []。这说明 map 里的函数没有被真正调用。",
+        flowIndex: 3
+      },
+      {
+        title: "第 4 步：调用 filter，也不执行",
+        activeLine: 6,
+        activeNodes: ["root", "map", "filter"],
+        executingNodes: [],
+        data: "[1, 2, 3, 4]",
+        calls: "[]",
+        text: "filter 继续返回新的 Derived RDD。它记录 parent 是 map RDD，以及 transform 是“保留大于 4 的值”。",
+        note: "这一步也没有数据流动。只是 RDD 链多了一层。",
+        flowIndex: 4
+      },
+      {
+        title: "第 5 步：调用 flat_map，仍然不执行",
+        activeLine: 7,
+        activeNodes: ["root", "map", "filter", "flat"],
+        executingNodes: [],
+        data: "[1, 2, 3, 4]",
+        calls: "[]",
+        text: "flat_map 再返回一个新的 Derived RDD。它记录 parent 是 filter RDD，以及 transform 是“一个元素变成两个元素”。",
+        note: "到这里已经有三层 Transformation，但仍然没有真正计算。",
+        flowIndex: 5
+      },
+      {
+        title: "第 6 步：调用 collect，开始触发执行",
+        activeLine: 10,
+        activeNodes: ["root", "map", "filter", "flat", "action"],
+        executingNodes: ["action"],
+        data: "[1, 2, 3, 4]",
+        calls: "[]",
+        text: "collect 是 Action。它会从最后一个 RDD 开始，沿着 parent 链一路找到 Root RDD，然后开始拉取数据。",
+        note: "Spark 的核心感觉来了：Transformation 只是描述计划，Action 才让计划执行。",
+        flowIndex: 6
+      },
+      {
+        title: "第 7 步：执行 map",
+        activeLine: 5,
+        activeNodes: ["root", "map", "filter", "flat", "action"],
+        executingNodes: ["map"],
+        data: "[2, 4, 6, 8]",
+        calls: "[1, 2, 3, 4]",
+        text: "Root RDD 先提供 [1, 2, 3, 4]，map 的 transform 现在才真正执行，把每个元素乘以 2。",
+        note: "calls 现在变成 [1, 2, 3, 4]，说明 map 函数是在 collect 之后才被调用的。",
+        flowIndex: 7
+      },
+      {
+        title: "第 8 步：执行 filter",
+        activeLine: 6,
+        activeNodes: ["root", "map", "filter", "flat", "action"],
+        executingNodes: ["filter"],
+        data: "[6, 8]",
+        calls: "[1, 2, 3, 4]",
+        text: "filter 接收 map 后的数据 [2, 4, 6, 8]，只保留大于 4 的元素，得到 [6, 8]。",
+        note: "这就是链式 Transformation：后一层处理前一层的结果。",
+        flowIndex: 8
+      },
+      {
+        title: "第 9 步：执行 flat_map",
+        activeLine: 7,
+        activeNodes: ["root", "map", "filter", "flat", "action"],
+        executingNodes: ["flat"],
+        data: "[6, 7, 8, 9]",
+        calls: "[1, 2, 3, 4]",
+        text: "flat_map 把 6 变成 [6, 7]，把 8 变成 [8, 9]，再拍平成 [6, 7, 8, 9]。",
+        note: "flat_map 的关键是“一进多出，然后拍平”。",
+        flowIndex: 9
+      },
+      {
+        title: "第 10 步：collect 返回结果",
+        activeLine: 10,
+        activeNodes: ["root", "map", "filter", "flat", "action"],
+        executingNodes: ["action"],
+        data: "[6, 7, 8, 9]",
+        calls: "[1, 2, 3, 4]",
+        text: "collect 把最终结果返回给 Driver，所以 print 会输出 [6, 7, 8, 9]。",
+        note: "本章最重要的一句话：map/filter/flat_map 创建 RDD 链，collect 触发 RDD 链执行。",
+        flowIndex: 10
+      }
+    ];
+
+    const flowLabels = [
+      "空白状态",
+      "创建 SparkContext",
+      "创建 Root RDD",
+      "记录 map",
+      "记录 filter",
+      "记录 flat_map",
+      "collect 触发执行",
+      "执行 map",
+      "执行 filter",
+      "执行 flat_map",
+      "返回结果"
+    ];
+
+    let currentStep = 0;
+
+    const codeBlock = document.getElementById("codeBlock");
+    const dataValue = document.getElementById("dataValue");
+    const callsValue = document.getElementById("callsValue");
+    const stepTitle = document.getElementById("stepTitle");
+    const stepText = document.getElementById("stepText");
+    const stepNote = document.getElementById("stepNote");
+    const flow = document.getElementById("flow");
+    const prevButton = document.getElementById("prevButton");
+    const nextButton = document.getElementById("nextButton");
+    const resetButton = document.getElementById("resetButton");
+
+    const nodeIds = ["root", "map", "filter", "flat", "action"];
+
+    function renderCode(activeLine) {
+      codeBlock.innerHTML = codeLines.map((line, index) => {
+        const safeLine = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (index === activeLine) {
+          return `<span class="active-line">${safeLine || " "}</span>`;
+        }
+        return safeLine || " ";
+      }).join("\n");
+    }
+
+    function renderNodes(step) {
+      nodeIds.forEach((id) => {
+        const node = document.getElementById(`node-${id}`);
+        node.classList.toggle("inactive", !step.activeNodes.includes(id));
+        node.classList.toggle("active", step.activeNodes.includes(id));
+        node.classList.toggle("executing", step.executingNodes.includes(id));
+      });
+    }
+
+    function renderFlow(stepIndex) {
+      flow.innerHTML = flowLabels.map((label, index) => {
+        const state = index < stepIndex ? "done" : index === stepIndex ? "current" : "";
+        return `<div class="flow-step ${state}"><span class="dot"></span><span>${label}</span></div>`;
+      }).join("");
+    }
+
+    function render() {
+      const step = steps[currentStep];
+      renderCode(step.activeLine);
+      renderNodes(step);
+      renderFlow(step.flowIndex);
+      dataValue.textContent = step.data;
+      callsValue.textContent = step.calls;
+      stepTitle.textContent = step.title;
+      stepText.textContent = step.text;
+      stepNote.textContent = step.note;
+      prevButton.disabled = currentStep === 0;
+      nextButton.disabled = currentStep === steps.length - 1;
+    }
+
+    prevButton.addEventListener("click", () => {
+      if (currentStep > 0) {
+        currentStep -= 1;
+        render();
+      }
+    });
+
+    nextButton.addEventListener("click", () => {
+      if (currentStep < steps.length - 1) {
+        currentStep += 1;
+        render();
+      }
+    });
+
+    resetButton.addEventListener("click", () => {
+      currentStep = 0;
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
