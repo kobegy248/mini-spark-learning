@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable
+from itertools import islice
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
@@ -49,6 +50,30 @@ class RDD(Generic[T]):
 
     def collect(self) -> list[T]:
         return list(self._compute())
+
+    def count(self) -> int:
+        return sum(1 for _ in self._compute())
+
+    def first(self) -> T:
+        for value in self._compute():
+            return value
+        raise ValueError("first called on empty RDD")
+
+    def take(self, count: int) -> list[T]:
+        if count < 0:
+            raise ValueError("take count must be non-negative")
+        return list(islice(self._compute(), count))
+
+    def reduce(self, function: Callable[[T, T], T]) -> T:
+        iterator = iter(self._compute())
+        try:
+            result = next(iterator)
+        except StopIteration as exc:
+            raise ValueError("reduce called on empty RDD") from exc
+
+        for value in iterator:
+            result = function(result, value)
+        return result
 
     def _compute(self) -> Iterable[T]:
         if self._parent is None:
