@@ -1,9 +1,16 @@
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from itertools import islice
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
 U = TypeVar("U")
+
+
+@dataclass(frozen=True)
+class Dependency:
+    parent: "RDD[object]"
+    kind: str
 
 
 class RDD(Generic[T]):
@@ -14,6 +21,8 @@ class RDD(Generic[T]):
         data: Iterable[T] | None = None,
         parent: "RDD[object] | None" = None,
         transform: Callable[[Iterable[object]], Iterable[T]] | None = None,
+        operation: str | None = None,
+        dependency_kind: str = "narrow",
     ) -> None:
         if data is None and parent is None:
             raise ValueError("RDD needs either source data or a parent RDD")
@@ -27,17 +36,21 @@ class RDD(Generic[T]):
         self._data = tuple(data) if data is not None else None
         self._parent = parent
         self._transform = transform
+        self._operation = operation or ("parallelize" if parent is None else "transform")
+        self._dependency_kind = dependency_kind
 
     def map(self, function: Callable[[T], U]) -> "RDD[U]":
         return RDD(
             parent=self,
             transform=lambda values: (function(value) for value in values),
+            operation="map",
         )
 
     def filter(self, function: Callable[[T], bool]) -> "RDD[T]":
         return RDD(
             parent=self,
             transform=lambda values: (value for value in values if function(value)),
+            operation="filter",
         )
 
     def flat_map(self, function: Callable[[T], Iterable[U]]) -> "RDD[U]":
@@ -46,6 +59,7 @@ class RDD(Generic[T]):
             transform=lambda values: (
                 item for value in values for item in function(value)
             ),
+            operation="flat_map",
         )
 
     def collect(self) -> list[T]:
@@ -74,6 +88,26 @@ class RDD(Generic[T]):
         for value in iterator:
             result = function(result, value)
         return result
+
+    def dependencies(self) -> list[Dependency]:
+        if self._parent is None:
+            return []
+        return [Dependency(parent=self._parent, kind=self._dependency_kind)]
+
+    def lineage(self) -> list[str]:
+        if self._parent is None:
+            return [self._operation]
+        return [*self._parent.lineage(), self._operation]
+
+    def to_debug_string(self) -> str:
+        lines: list[str] = []
+        self._append_debug_lines(lines, depth=0)
+        return "\n".join(lines)
+
+    def _append_debug_lines(self, lines: list[str], depth: int) -> None:
+        lines.append(f"{'  ' * depth}{self._operation}")
+        if self._parent is not None:
+            self._parent._append_debug_lines(lines, depth + 1)
 
     def _compute(self) -> Iterable[T]:
         if self._parent is None:
