@@ -52,6 +52,7 @@ class RDD(Generic[T]):
         self._transform = transform
         self._operation = operation or ("parallelize" if parent is None else "transform")
         self._dependency_kind = dependency_kind
+        self._last_job_tasks = []
 
     @staticmethod
     def _split_partitions(data: tuple[T, ...], num_slices: int) -> tuple[Partition[T], ...]:
@@ -89,10 +90,28 @@ class RDD(Generic[T]):
         )
 
     def collect(self) -> list[T]:
-        return list(self._compute())
+        from mini_spark.scheduler import LocalScheduler
+
+        scheduler = LocalScheduler()
+        results = scheduler.run_job(
+            self,
+            lambda values: list(values),
+            operation="collect",
+        )
+        self._last_job_tasks = scheduler.last_tasks
+        return list(chain.from_iterable(result.value for result in results))
 
     def count(self) -> int:
-        return sum(1 for _ in self._compute())
+        from mini_spark.scheduler import LocalScheduler
+
+        scheduler = LocalScheduler()
+        results = scheduler.run_job(
+            self,
+            lambda values: sum(1 for _ in values),
+            operation="count",
+        )
+        self._last_job_tasks = scheduler.last_tasks
+        return sum(result.value for result in results)
 
     def first(self) -> T:
         for value in self._compute():
@@ -114,6 +133,9 @@ class RDD(Generic[T]):
         for value in iterator:
             result = function(result, value)
         return result
+
+    def last_job_tasks(self):
+        return list(self._last_job_tasks)
 
     def dependencies(self) -> list[Dependency]:
         if self._parent is None:
