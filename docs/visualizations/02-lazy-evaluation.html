@@ -328,7 +328,7 @@
 <body>
   <header>
     <h1>Lazy Evaluation 可视化：为什么 map 不会马上执行</h1>
-    <p class="subtitle">点击“下一步”，观察 RDD 链如何先记录转换，直到 collect 才真正计算。</p>
+    <p class="subtitle">点击“下一步”，观察第二阶段教学模型里的 RDD 链如何先记录转换，直到 collect 才真正计算。</p>
   </header>
 
   <main>
@@ -340,7 +340,7 @@
         <div class="rdd-chain" aria-label="RDD chain">
           <div class="node root" id="node-root">
             <div class="node-title">Root RDD <span class="badge">source</span></div>
-            <div class="node-desc">保存原始数据：_data = (1, 2, 3, 4)</div>
+            <div class="node-desc">第二阶段模型：保存原始数据 _data = (1, 2, 3, 4)</div>
           </div>
           <div class="node map inactive" id="node-map">
             <div class="node-title">map RDD <span class="badge">lazy</span></div>
@@ -437,7 +437,7 @@
         executingNodes: [],
         data: "[1, 2, 3, 4]",
         calls: "[]",
-        text: "parallelize 把普通 Python 列表包装成 Root RDD。Root RDD 保存源数据：_data = (1, 2, 3, 4)。",
+        text: "parallelize 把普通 Python 列表包装成 Root RDD。在第二阶段教学模型里，可以把它理解为保存源数据：_data = (1, 2, 3, 4)。后续完整代码会把它演进成 _partitions。",
         note: "这一步只是把数据放进 RDD 对象，还没有 map、filter，也没有 action。",
         flowIndex: 2
       },

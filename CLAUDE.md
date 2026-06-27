@@ -51,7 +51,7 @@ Mini Spark 是一个**学习项目**：用 Python 从零实现一个迷你版 Ap
 - 能类比就类比，例如把 Transformation 类比成“点菜”，把 Action 类比成“上菜”。
 - 示例代码必须能直接运行，并给出明确的预期输出。
 - 关键代码要逐行解释：这一行创建了什么对象、保存了什么状态、什么时候真正执行。
-- 必须解释 Mini Spark 内部状态，例如 `_data`、`_parent`、`_transform` 分别代表什么。
+- 必须解释 Mini Spark 内部状态，并区分“本阶段教学模型”和“最终代码模型”。例如早期阶段可以用 `_data`、`_parent`、`_transform` 帮助理解，但当前最终代码已经演进为 `_partitions`、`_parent`、`_transform`、`_wide_transform`、`_dependency_kind`、缓存状态和丢失分区状态。
 - 必须对照真实 Spark，但要说清楚“当前 Mini Spark 简化了什么”，不要让学习者误以为这就是 Spark 全貌。
 - 必须加入“亲手实验”，让学习者能通过运行命令观察现象。
 - 必须加入“常见误解”，主动拆掉新手容易误会的点。
@@ -78,9 +78,11 @@ Mini Spark 是一个**学习项目**：用 Python 从零实现一个迷你版 Ap
 执行模型是 **RDD 的惰性血缘（lazy lineage）**，对应 Spark 的核心思想：
 
 - `mini_spark/context.py` → `SparkContext.parallelize(data)` 是入口，返回一个根 `RDD`。
-- `mini_spark/rdd.py` → `RDD` 是唯一的核心抽象。一个 RDD 要么是**根 RDD**（持有 `_data`，构造时物化成不可变的 `tuple`，这样源列表后续的修改不会泄漏进来），要么是**派生 RDD**（持有 `_parent` 和一个 `_transform` 可调用对象）。构造函数强制维护这一不变式：根 与 父+transform 二者互斥。
-- Transformation（`map`、`filter`、`flat_map`）**不执行计算**——它们返回一个新的派生 RDD，其 `_transform` 是一个产出生成器的 lambda。惰性来自生成器：在 action 执行前不会迭代任何数据。
-- 目前唯一的 action 是 `collect()`，它调用 `_compute()`。`_compute()` 沿父链向上走，通过 `self._transform(self._parent._compute())` 把数据经每一步 transform 的生成器拉取过来。这个递归拉取就是整个执行引擎——目前还没有调度器、没有分区、没有 shuffle（那些是后续阶段才有的）。
+- `mini_spark/rdd.py` → `RDD` 是唯一的核心抽象。一个 RDD 要么是**根 RDD**（持有 `_partitions`，由 `parallelize(data, num_slices=...)` 把源数据切成不可变分区），要么是**派生 RDD**（持有 `_parent`，再持有窄依赖 `_transform` 或宽依赖 `_wide_transform` 之一）。构造函数维护这些不变式：根 RDD 和派生 RDD 互斥，窄转换和宽转换互斥。
+- Transformation（`map`、`filter`、`flat_map`、`group_by_key`、`reduce_by_key`）**不执行计算**——它们返回新的派生 RDD，只记录父 RDD、操作名、依赖类型和计算函数。窄依赖逐分区处理父分区，宽依赖会拉取上游多个分区并重新分组。
+- Action 中 `collect()` 和 `count()` 会创建 `LocalScheduler`，由 scheduler 把 RDD 的分区变成 Task 并交给本地 Executor 顺序执行；`first()`、`take()`、`reduce()` 仍直接通过 `_compute()` 拉取数据，用于展示惰性求值和提前停止。
+- `_compute()` 现在只是把 `_compute_partitions()` 的分区结果串起来。真正的核心路径是 `_compute_partitions()`：先处理 cache 命中和丢失分区恢复，再根据根 RDD、窄依赖、宽依赖分别计算分区。
+- 后续文档如果需要讲早期阶段的 `_data` / `_transform` 简化模型，必须明确写成“第二阶段教学模型”或“到本阶段为止”，不要写成“当前最终代码就是这样”。
 
 `计划.txt` 中的每个新阶段都在扩展这个模型（Lineage → Partition → Scheduler → DAG → Shuffle → …）。延续现有风格：保持 `RDD` 不可变，新阶段通过增加字段 / transform 种类来扩展，而不是重写 `_compute`。
 

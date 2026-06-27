@@ -471,13 +471,17 @@ collect 触发整条链计算
 换来省内存、可优化、可容错的可能性。
 ```
 
-## 12. Mini Spark 内部怎么实现 Lazy Evaluation
+## 12. 第二阶段教学模型：Mini Spark 怎么实现 Lazy Evaluation
 
-现在的 [mini_spark/rdd.py](../mini_spark/rdd.py) 里，RDD 有两种形态。
+为了把 Lazy Evaluation 讲清楚，先看第二阶段的**教学模型**。
+
+这一节展示的是“刚学 Transformation 时”的最小实现，不是最终项目里 [mini_spark/rdd.py](../mini_spark/rdd.py) 的完整形态。最终代码在后续阶段已经加入了 Partition、Scheduler、Shuffle、Cache 和容错；但理解 Lazy Evaluation 时，先用这个小模型更容易看清核心思想。
+
+在第二阶段模型里，RDD 有两种形态。
 
 ### 12.1 Root RDD
 
-Root RDD 有自己的数据：
+Root RDD 有自己的数据。第二阶段可以把它想成这样：
 
 ```python
 self._data = tuple(data) if data is not None else None
@@ -489,7 +493,7 @@ self._data = tuple(data) if data is not None else None
 sc.parallelize([1, 2, 3])
 ```
 
-会得到：
+可以理解成：
 
 ```text
 RDD
@@ -500,7 +504,7 @@ RDD
 
 ### 12.2 Derived RDD
 
-Derived RDD 没有自己的数据。
+Derived RDD 没有自己的结果数据。
 
 它记录两个东西：
 
@@ -515,7 +519,7 @@ self._transform = transform
 rdd.map(lambda value: value * 10)
 ```
 
-会得到：
+可以理解成：
 
 ```text
 RDD
@@ -532,7 +536,7 @@ RDD
 
 ### 12.3 collect 如何触发计算
 
-`collect()` 调用：
+在第二阶段模型里，`collect()` 调用：
 
 ```python
 def collect(self) -> list[T]:
@@ -610,12 +614,12 @@ mapped = source.map(lambda value: value + 1)
 | `map` 返回新 RDD | `RDD.map` 也返回新 RDD |
 | `filter` 返回新 RDD | `RDD.filter` 也返回新 RDD |
 | `flat_map` 返回新 RDD | PySpark 中叫 `flatMap` |
-| `_parent` 记录父 RDD | 真实 Spark 有 Dependency 体系（窄/宽） |
-| `_transform` 记录转换函数 | 真实 Spark 记录每个分区上的计算函数（`compute`） |
-| `collect()` 调用 `_compute()` | Action 触发 Job，走 DAGScheduler → TaskScheduler → Executor |
+| 第二阶段用 `_parent` 记录父 RDD | 真实 Spark 有 Dependency 体系（窄/宽） |
+| 第二阶段用 `_transform` 记录转换函数 | 真实 Spark 记录每个分区上的计算函数（`compute`） |
+| 第二阶段里 `collect()` 调用 `_compute()` | Action 触发 Job，走 DAGScheduler → TaskScheduler → Executor |
 | 生成器串起来一次拉取 | 窄依赖会用 pipeline 把多个算子融合成一个 Task 执行 |
 
-当前 Mini Spark 很简化：
+到第二阶段为止，Mini Spark 很简化：
 
 - 没有分区层面的并行。
 - 没有真正的 Task 调度。
@@ -625,6 +629,8 @@ mapped = source.map(lambda value: value + 1)
 但它已经抓住了 Spark 的一个核心思想：
 
 > Transformation 只描述计算，Action 才触发计算。
+
+读到完整项目时要注意：当前最终代码已经把 Root RDD 的 `_data` 演进成 `_partitions`，把 `collect()` / `count()` 接入了 `LocalScheduler`。这些升级没有推翻本章思想，只是把“单条数据流”扩展成了“按分区调度的执行流”。
 
 真实 Spark 比这里复杂的地方主要在于：它会把一连串窄依赖 Transformation **融合（pipeline）成一次遍历**，在同一个 Task 内完成，连生成器的边界都被进一步压榨。Mini Spark 已经用生成器表达了“边算边消费”的雏形，但没有显式的 pipeline 调度。
 

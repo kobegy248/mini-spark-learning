@@ -337,9 +337,11 @@ def reduce(self, function: Callable[[T, T], T]) -> T:
 | `first()` 取第一个元素 | `RDD.first()` 通常只需要计算足够找到第一个元素的分区 |
 | `take(n)` 取前 n 个元素 | `RDD.take(n)` 会尽量少计算分区，但仍可能触发多个 Task |
 | `reduce()` 本地顺序合并 | 真实 Spark 会先在分区内 reduce（map-side combine），再跨分区合并 |
-| 所有 Action 直接调用 `_compute()` | Action → Job → Stage → Task → Executor，结果返回 Driver |
+| 第三阶段里所有 Action 直接调用 `_compute()` | Action → Job → Stage → Task → Executor，结果返回 Driver |
 
-当前 Mini Spark 还没有 Partition，所以所有 Action 都是在本地单进程里完成，`first`/`take` 的“提前停止”也只是单线程生成器的提前停止。
+到第三阶段为止，Mini Spark 还没有 Partition，所以所有 Action 都是在本地单进程里完成，`first`/`take` 的“提前停止”也只是单线程生成器的提前停止。
+
+读完整项目时要注意：后续阶段已经让 `collect()` / `count()` 接入 `LocalScheduler`，并引入 Partition、Task 和 Executor。第三章这里讲的是 Action 的最小心智模型：Action 是“开始要结果”的按钮。
 
 真实 Spark 的复杂之处在于：它的“提前停止”是跨分区的——`take(n)` 要在多个分区上调度 Task，拿到够数就取消剩余 Task，这涉及分布式取消和结果回传。Mini Spark 完全没有这层。
 
@@ -424,7 +426,7 @@ calls: [1]
 - Action 是唯一触发计算的开关，并且携带“要多少结果”的信息。
 - `count`、`first`、`take`、`reduce` 都是 Action。
 - `first`/`take` 能提前停止，靠的是生成器的惰性。
-- 当前 Mini Spark 的 Action 直接调用 `_compute()`；真实 Spark 的 Action 会触发 Job → Stage → Task。
+- 在第三阶段模型里，Action 直接调用 `_compute()`；真实 Spark 的 Action 会触发 Job → Stage → Task。
 
 ## 14. 思考题
 

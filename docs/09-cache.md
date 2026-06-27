@@ -204,8 +204,8 @@ cache()                    → 打开 _cache_enabled，返回自己（没算）
 | `cache()` | `RDD.cache()`（等价于 `persist(MEMORY_ONLY)`） |
 | `persist()` | `RDD.persist(StorageLevel)`，可选存储级别 |
 | 命中/未命中计数 | Spark UI Storage 页面，显示每个 RDD 的缓存大小/分区数 |
-| 缓存永远在内存 | 内存不足时按存储级别溢写磁盘或丢弃 |
-| 不会丢失 | Executor 挂掉时缓存丢失，需重算 |
+| 第九阶段里缓存只放本地内存 | 内存不足时按存储级别溢写磁盘或丢弃 |
+| 第九阶段还不模拟缓存丢失 | Executor 挂掉时缓存丢失，需重算 |
 
 真实 Spark 的缓存更复杂，会考虑：
 
@@ -214,7 +214,9 @@ cache()                    → 打开 _cache_enabled，返回自己（没算）
 - **Executor 丢失**：缓存在 Executor 内存里，Executor 挂了缓存就没了，后续 Action 会触发重算（和下一章容错呼应）。
 - **序列化**：可选择以序列化形式存储，省内存但读取要反序列化。
 
-Mini Spark 的缓存永远在本地内存、不会丢失、没有淘汰——这是为了学习简化。
+到第九阶段为止，Mini Spark 的缓存只放在本地内存里，不模拟丢失，也没有淘汰策略——这是为了先把“缓存命中/未命中”和“避免重复计算”讲清楚。
+
+下一章会故意加入 `simulate_partition_loss()` 和血缘重算，用来学习“缓存块丢了以后，为什么 RDD 还能靠 lineage 恢复”。
 
 ## 12. 亲手实验
 
