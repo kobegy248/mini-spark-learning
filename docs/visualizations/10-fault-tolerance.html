@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Spark - Fault Tolerance 可视化</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f6f7f9; color: #20242a; }
+    header { padding: 28px 32px 18px; background: #fff; border-bottom: 1px solid #d8dee8; }
+    h1 { margin: 0 0 8px; font-size: 26px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px; max-width: 1120px; margin: 0 auto; }
+    section { background: #fff; border: 1px solid #d8dee8; border-radius: 8px; box-shadow: 0 10px 26px rgba(22, 34, 51, .08); overflow: hidden; }
+    h2 { margin: 0; padding: 14px 16px; font-size: 16px; border-bottom: 1px solid #d8dee8; background: #fbfcfe; }
+    .body { padding: 16px; }
+    .box { margin: 10px 0; padding: 14px; border-radius: 8px; border: 2px solid #d8dee8; opacity: .35; }
+    .box.active { opacity: 1; border-color: #2f6fed; }
+    .lost { background: #ffe7e7; }
+    .recover { background: #e9f8ef; }
+    .controls { display: flex; gap: 10px; padding: 14px 16px; border-top: 1px solid #d8dee8; background: #fbfcfe; }
+    button { border: 1px solid #b8c6dc; border-radius: 6px; padding: 9px 14px; background: #fff; cursor: pointer; }
+    button.primary { border-color: #2f6fed; background: #2f6fed; color: #fff; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .explain { border: 1px solid #d8dee8; border-radius: 8px; padding: 14px; min-height: 150px; }
+    @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header><h1>Fault Tolerance 可视化</h1><p>观察缓存 Partition 丢失后，Mini Spark 如何根据 Lineage 重算。</p></header>
+  <main>
+    <section>
+      <h2>恢复流程</h2>
+      <div class="body">
+        <div class="box" id="cache">缓存已有：P0=[10,20], P1=[30,40]</div>
+        <div class="box lost" id="lost">模拟丢失：P1 丢了</div>
+        <div class="box recover" id="lineage">沿 Lineage：Root P1=[3,4] -> map(*10)</div>
+        <div class="box recover" id="done">恢复缓存：P1=[30,40]</div>
+      </div>
+      <div class="controls"><button id="prev">上一步</button><button class="primary" id="next">下一步</button><button id="reset">重置</button></div>
+    </section>
+    <section><h2>解释</h2><div class="body"><div class="explain"><h3 id="title"></h3><p id="text"></p></div></div></section>
+  </main>
+  <script>
+    const steps = [
+      { ids: ["cache"], title: "第 1 步：缓存存在", text: "第一次 Action 已经把两个 Partition 的结果缓存起来。" },
+      { ids: ["cache","lost"], title: "第 2 步：模拟丢失", text: "Partition 1 被标记为丢失。" },
+      { ids: ["cache","lost","lineage"], title: "第 3 步：根据 Lineage 重算", text: "只重新计算丢失的 Partition 1。" },
+      { ids: ["cache","done"], title: "第 4 步：恢复完成", text: "丢失的缓存块被重新写回，结果再次完整。" }
+    ];
+    let index = 0;
+    const ids = ["cache","lost","lineage","done"];
+    function render() {
+      const step = steps[index];
+      ids.forEach(id => document.getElementById(id).classList.toggle("active", step.ids.includes(id)));
+      document.getElementById("title").textContent = step.title;
+      document.getElementById("text").textContent = step.text;
+      document.getElementById("prev").disabled = index === 0;
+      document.getElementById("next").disabled = index === steps.length - 1;
+    }
+    document.getElementById("prev").onclick = () => { if (index > 0) { index -= 1; render(); } };
+    document.getElementById("next").onclick = () => { if (index < steps.length - 1) { index += 1; render(); } };
+    document.getElementById("reset").onclick = () => { index = 0; render(); };
+    render();
+  </script>
+</body>
+</html>

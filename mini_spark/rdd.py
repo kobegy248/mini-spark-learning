@@ -62,6 +62,7 @@ class RDD(Generic[T]):
         self._cached_partitions: tuple[tuple[T, ...], ...] | None = None
         self._cache_hits = 0
         self._cache_misses = 0
+        self._lost_partition_indexes: set[int] = set()
 
     @staticmethod
     def _split_partitions(data: tuple[T, ...], num_slices: int) -> tuple[Partition[T], ...]:
@@ -174,6 +175,27 @@ class RDD(Generic[T]):
             "misses": self._cache_misses,
         }
 
+    def simulate_partition_loss(self, partition_index: int) -> None:
+        if partition_index < 0 or partition_index >= self.num_partitions():
+            raise IndexError("partition index out of range")
+        self._lost_partition_indexes.add(partition_index)
+
+    def lost_partitions(self) -> list[int]:
+        return sorted(self._lost_partition_indexes)
+
+    def recover_lost_partitions(self) -> None:
+        if not self._lost_partition_indexes:
+            return
+        if self._cached_partitions is None:
+            self._compute_partitions()
+            return
+
+        restored = [tuple(partition) for partition in self._cached_partitions]
+        for index in sorted(self._lost_partition_indexes):
+            restored[index] = tuple(self._compute_partition_uncached(index))
+        self._cached_partitions = tuple(restored)
+        self._lost_partition_indexes.clear()
+
     def collect(self) -> list[T]:
         from mini_spark.scheduler import LocalScheduler
 
@@ -275,6 +297,8 @@ class RDD(Generic[T]):
 
     def _compute_partitions(self) -> list[Iterable[T]]:
         if self._cache_enabled and self._cached_partitions is not None:
+            if self._lost_partition_indexes:
+                self.recover_lost_partitions()
             self._cache_hits += 1
             return [partition for partition in self._cached_partitions]
 
@@ -301,3 +325,17 @@ class RDD(Generic[T]):
             self._transform(parent_partition)
             for parent_partition in self._parent._compute_partitions()
         ]
+
+    def _compute_partition_uncached(self, partition_index: int) -> Iterable[T]:
+        if self._parent is None:
+            if self._partitions is None:
+                raise RuntimeError("Root RDD has no partitions")
+            return self._partitions[partition_index].data
+
+        if self._wide_transform is not None:
+            return self._compute_partitions_uncached()[partition_index]
+
+        if self._transform is None:
+            raise RuntimeError("Derived RDD has no transform")
+
+        return self._transform(self._parent._compute_partition_uncached(partition_index))
