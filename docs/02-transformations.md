@@ -35,7 +35,102 @@
 
 它会用“下一步”的方式展示：`map`、`filter`、`flat_map` 如何先创建 RDD 链，直到 `collect()` 才真正执行。
 
-## 1. 用人话理解 Transformation
+## 1. 先从最朴素的方案开始
+
+假设我们要对一份数据做几步转换：
+
+```python
+data = [1, 2, 3, 4]
+
+mapped = [x * 10 for x in data]       # 每个元素乘以 10
+filtered = [x for x in mapped if x > 20]  # 保留大于 20 的
+```
+
+这是最直觉的写法：**写一行，就立刻算一行，并生成一个中间结果**。
+
+对应到 RDD 上，朴素方案会是这样：
+
+```python
+rdd = sc.parallelize([1, 2, 3, 4])
+mapped = rdd.map(lambda x: x * 10)     # 朴素想法：这里就把数据全算出来
+filtered = mapped.filter(lambda x: x > 20)  # 朴素想法：这里再算一次
+```
+
+朴素方案的潜台词是：
+
+```text
+map 这一行 = 立刻遍历所有数据，生成一份新数据
+filter 这一行 = 再立刻遍历一遍，生成又一份新数据
+```
+
+这就是“立即执行（eager）”模型。
+
+## 2. 朴素方案会遇到什么问题
+
+对小数据，立即执行没什么问题。但 Spark 面对的是 TB 级、分布在几十台机器上的数据。立即执行会撞上三堵墙。
+
+### 问题 1：每一步都物化中间结果，太贵
+
+立即执行意味着每一步都要把中间结果完整地存下来：
+
+```text
+data      → 100GB
+mapped    → 100GB（存下来）
+filtered  → 50GB（再存下来）
+```
+
+中间结果会吃光内存、撑爆磁盘，而其中很多中间结果后面根本没人再用。
+
+### 问题 2：系统看不到完整链路，没法优化
+
+如果每写一行就立刻执行，系统只能“走一步看一步”。它没法在全局上发现：
+
+```text
+map 之后紧跟 filter，能不能把两步合并成一次遍历？
+这条链路里哪一步是窄依赖、哪一步要 Shuffle？
+能不能先看到整条链，再决定怎么切 Stage？
+```
+
+优化需要“先看见全局，再动手”。立即执行剥夺了这个机会。
+
+### 问题 3：重复计算没法避免
+
+如果同一份数据被两次 Action 使用：
+
+```python
+rdd = sc.parallelize(...).map(很贵的转换)
+print(rdd.count())   # 第一次：算一遍
+print(rdd.collect()) # 第二次：又算一遍
+```
+
+立即执行模型里，每条链路各算各的，昂贵转换会被重复执行。
+
+### 问题 4：失败后只能从头再来
+
+立即执行丢掉中间结果后，没法回答“这一步是怎么来的”，只能整条链重跑。
+
+## 3. Spark 为什么需要 Lazy Evaluation
+
+把上面四个问题放一起，Spark 需要的是：
+
+```text
+1. 先把“要做什么”记录下来，但不立刻做。
+2. 等到真正要结果时，再一次性看清整条链路。
+3. 看清之后，可以合并步骤、规划 Stage、决定并行度。
+4. 同一条链路被复用时，可以缓存（后面章节会讲）。
+5. 失败时，可以根据记录的“来历”重新计算。
+```
+
+这就是 Transformation 设计成**懒执行**的根本原因。
+
+所以 Spark 把操作分成两类：
+
+- **Transformation**（`map`、`filter`、`flat_map`）：只记录计划，返回一个新 RDD，不动数据。
+- **Action**（`collect`、`count`）：才真正触发计算。
+
+这不是 Spark 的任性，而是分布式计算在“数据大、要优化、要容错”这三重压力下的必然选择。
+
+## 4. 用人话理解 Transformation
 
 Transformation 可以先理解成：
 
@@ -63,7 +158,7 @@ rdd2 = rdd.map(lambda value: value * 10)
 rdd2.collect()
 ```
 
-## 2. 一个生活类比：点菜和上菜
+## 5. 一个生活类比：点菜和上菜
 
 你可以把 Spark 程序想象成餐厅点菜：
 
@@ -100,7 +195,9 @@ collect()
 - Transformation：点菜，记录计划。
 - Action：上菜，触发执行。
 
-## 3. 最小示例：map
+为什么餐厅要先记菜单、而不是点一道做一道？因为厨师要等菜单齐了，才能合并工序、统筹火力。Spark 也是一样：等所有 Transformation 记录完，再统筹执行。
+
+## 6. 最小示例：map
 
 代码：
 
@@ -130,7 +227,7 @@ map 创建了一个新的 RDD，
 collect 调用时，才真正执行乘以 10。
 ```
 
-## 4. 逐行解释 map 示例
+## 7. 逐行解释 map 示例
 
 ### 第 1 步：创建源 RDD
 
@@ -198,7 +295,7 @@ parent 是 Root RDD，拿到 (1, 2, 3)
 得到 [10, 20, 30]
 ```
 
-## 5. 用实验确认 map 是懒执行
+## 8. 用实验确认 map 是懒执行
 
 我们可以用一个列表 `calls` 记录函数是否真的执行。
 
@@ -225,11 +322,11 @@ collect 后: [1, 2, 3]
 
 这就是 Lazy Evaluation。
 
-## 6. filter：过滤数据
+## 9. filter 与 flat_map
+
+### filter：过滤数据
 
 `filter` 用来保留满足条件的数据。
-
-代码：
 
 ```python
 from mini_spark import SparkContext
@@ -255,15 +352,9 @@ print(even.collect())
 [2, 4]
 ```
 
-但还是一样：`filter` 本身不执行，它只返回一个新的 RDD。
+但还是一样：`filter` 本身不执行，它只返回一个新的 RDD。真正过滤发生在 `even.collect()`。
 
-真正过滤发生在：
-
-```python
-even.collect()
-```
-
-## 7. flat_map：一个元素变多个元素
+### flat_map：一个元素变多个元素
 
 `flat_map` 比 `map` 多一步“拍平”。
 
@@ -302,7 +393,7 @@ print(chars.collect())
 - `map`：一个元素变一个元素。
 - `flat_map`：一个元素变多个元素，然后把结果摊平。
 
-## 8. 链式调用：多个 Transformation 连起来
+## 10. 链式调用：多个 Transformation 连起来
 
 代码：
 
@@ -358,11 +449,33 @@ flat_map: 每个元素变成 [value, value + 1]
 collect 触发整条链计算
 ```
 
-## 9. Mini Spark 内部怎么实现 Lazy Evaluation
+## 11. 这个设计的收益和代价
+
+### 收益
+
+- **省中间结果**：数据以生成器（流）的方式被拉取，map 的输出不会完整物化，而是边算边被 filter 消费。
+- **可全局优化**：Spark 在 Action 触发时才看到完整链路，可以合并窄依赖、规划 Stage。
+- **可复用可缓存**：同一 RDD 被多次使用时可以缓存（第 09 章会讲）。
+- **可容错**：因为记录了来历，失败可以重算（第 04、10 章）。
+
+### 代价
+
+- **不直观**：新手会疑惑“我写了 map 为什么没执行”。
+- **调试更难**：错误被推迟到 Action 才暴露，报错位置离真正出问题的 Transformation 可能很远。
+- **需要用户理解惰性**：否则容易写出“以为算了其实没算”或“重复计算不自知”的代码。
+
+好的设计都是在矛盾里做权衡。Lazy Evaluation 的权衡是：
+
+```text
+牺牲一点直观性，
+换来省内存、可优化、可容错的可能性。
+```
+
+## 12. Mini Spark 内部怎么实现 Lazy Evaluation
 
 现在的 [mini_spark/rdd.py](../mini_spark/rdd.py) 里，RDD 有两种形态。
 
-### 9.1 Root RDD
+### 12.1 Root RDD
 
 Root RDD 有自己的数据：
 
@@ -385,7 +498,7 @@ RDD
   _transform = None
 ```
 
-### 9.2 Derived RDD
+### 12.2 Derived RDD
 
 Derived RDD 没有自己的数据。
 
@@ -415,7 +528,9 @@ RDD
 
 > 新 RDD 不急着保存结果，只保存“父 RDD + 转换函数”。
 
-### 9.3 collect 如何触发计算
+而且 `_transform` 返回的是**生成器**，不是列表。生成器的特点是“你要一个我才算一个”，这天然就是惰性的。
+
+### 12.3 collect 如何触发计算
 
 `collect()` 调用：
 
@@ -452,7 +567,7 @@ def _compute(self) -> Iterable[T]:
 
 所以链式 Transformation 最后会从尾部往前找 parent，直到找到 Root RDD，然后再一层层把转换函数应用回来。
 
-## 10. 为什么 Transformation 返回新的 RDD
+## 13. 为什么 Transformation 返回新的 RDD
 
 比如：
 
@@ -486,32 +601,34 @@ mapped = source.map(lambda value: value + 1)
 - 每一步转换都能形成清晰的父子关系。
 - 后面做 Lineage 和容错时，可以根据父子关系重新计算。
 
-如果 `map` 直接修改原来的 RDD，就很难知道数据是怎么一步步来的。
+如果 `map` 直接修改原来的 RDD，就很难知道数据是怎么一步步来的，Lineage 也就不可信了。
 
-## 11. 对照真实 Spark
+## 14. 对照真实 Spark：真实世界复杂在哪里
 
 | Mini Spark | 真实 Spark |
 | --- | --- |
 | `map` 返回新 RDD | `RDD.map` 也返回新 RDD |
 | `filter` 返回新 RDD | `RDD.filter` 也返回新 RDD |
 | `flat_map` 返回新 RDD | PySpark 中叫 `flatMap` |
-| `_parent` 记录父 RDD | 真实 Spark 有 Dependency |
-| `_transform` 记录转换函数 | 真实 Spark 会记录每个分区上的计算逻辑 |
-| `collect()` 调用 `_compute()` | Action 触发 Job 执行 |
+| `_parent` 记录父 RDD | 真实 Spark 有 Dependency 体系（窄/宽） |
+| `_transform` 记录转换函数 | 真实 Spark 记录每个分区上的计算函数（`compute`） |
+| `collect()` 调用 `_compute()` | Action 触发 Job，走 DAGScheduler → TaskScheduler → Executor |
+| 生成器串起来一次拉取 | 窄依赖会用 pipeline 把多个算子融合成一个 Task 执行 |
 
 当前 Mini Spark 很简化：
 
-- 没有分区。
-- 没有任务调度。
+- 没有分区层面的并行。
+- 没有真正的 Task 调度。
+- 没有 Stage 切分（还没遇到 Shuffle）。
 - 没有 Executor。
-- 没有 Stage。
-- 没有 Shuffle。
 
 但它已经抓住了 Spark 的一个核心思想：
 
 > Transformation 只描述计算，Action 才触发计算。
 
-## 12. PySpark 实战提醒
+真实 Spark 比这里复杂的地方主要在于：它会把一连串窄依赖 Transformation **融合（pipeline）成一次遍历**，在同一个 Task 内完成，连生成器的边界都被进一步压榨。Mini Spark 已经用生成器表达了“边算边消费”的雏形，但没有显式的 pipeline 调度。
+
+## 15. PySpark 实战提醒
 
 在 PySpark 中，这段代码不会马上执行：
 
@@ -543,7 +660,7 @@ rdd3.collect()
 - DataFrame 的 `show()`
 - 写出数据，比如 `write.parquet(...)`
 
-## 13. 常见误解
+## 16. 常见误解
 
 ### 误解 1：map 会立刻处理数据
 
@@ -571,21 +688,25 @@ RDD 是不可变的。`filter` 返回新 RDD，原 RDD 不变。
 
 Lazy Evaluation 让 Spark 可以先看到完整计算链路，再统一规划执行。这是后面 DAG、Stage、优化和容错的基础。
 
-## 14. 本章掌握标准
+### 误解 5：Transformation 报错会在我写 map 那一行就报
+
+不会。因为 `map` 根本没执行函数体，函数里的错误要等到 Action 触发真正执行时才会暴露。这是惰性带来的调试代价。
+
+## 17. 本章掌握标准
 
 如果你能讲清楚下面这些话，就算这一章过关：
 
-- `map`、`filter`、`flat_map` 都是 Transformation。
-- Transformation 不立即执行。
-- Transformation 返回新的 RDD，不修改原 RDD。
-- 新 RDD 会记录 parent 和 transform。
+- 立即执行（朴素方案）在“中间结果大、要全局优化、要容错”这三点上撑不住。
+- Transformation 不立即执行，是为了让 Spark 先记录计划、看清全局再动手。
+- `map`、`filter`、`flat_map` 都是 Transformation，返回新 RDD，不改原 RDD。
+- 新 RDD 会记录 parent 和 transform，惰性来自生成器。
 - `collect()` 是 Action，会触发整条链路计算。
 - Lazy Evaluation 是 Spark 构建 Lineage、DAG 和执行计划的基础。
 
-## 15. 思考题
+## 18. 思考题
 
-1. 为什么 `map` 不应该直接修改原来的 RDD？
-2. 为什么 Transformation 不立即执行有利于 Spark 优化？
-3. `map` 和 `flat_map` 的核心区别是什么？
-4. 如果同一个 RDD 调用两次 `collect()`，当前 Mini Spark 会发生什么？
-5. Lazy Evaluation 和 Lineage 之间有什么关系？
+1. 如果每个 Transformation 都立即执行并物化中间结果，大数据场景会撞上哪几堵墙？
+2. 为什么把 map 和 filter 都设计成“返回新 RDD”而不是“原地修改”？
+3. `map` 和 `flat_map` 的核心区别是什么？举一个 `map` 做不了、必须用 `flat_map` 的例子。
+4. 如果同一个 RDD 调用两次 `collect()`，当前 Mini Spark 会发生什么？为什么？（提示：还没有 Cache）
+5. Lazy Evaluation 和后面要讲的 Lineage、DAG 之间是什么关系？为什么说 Lazy 是它们的前提？

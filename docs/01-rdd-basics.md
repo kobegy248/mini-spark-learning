@@ -1,14 +1,327 @@
-# 01 - RDD 基础：先把 Spark 的入口跑起来
+# 01 - RDD 基础：为什么 Spark 需要 RDD 这种设计
 
 ## 0. 这一章先学什么，不学什么
 
-这一章我们先不学集群、不学调度器、不学 Shuffle，也不学复杂优化。
+这一章不是为了背诵“RDD 是弹性分布式数据集”这个定义。
 
-我们只解决一个最小问题：
+这一章真正要解决的问题是：
 
-> 如何把一份普通 Python 数据，包装成一个 Mini Spark 里的 `RDD`，然后通过 `collect()` 把数据取回来？
+> 如果我们想处理大规模数据，为什么不能只用普通列表、普通函数和普通循环？Spark 为什么要设计出 RDD 这个抽象？
 
-也就是这段代码：
+我们会先从最朴素的方案开始，然后一步一步看它为什么不够用，最后推导出 RDD 的设计思想。
+
+这一章先不学：
+
+- 真正的集群通信
+- Scheduler
+- Shuffle
+- Cache
+- Spark SQL
+
+我们只先抓住 RDD 的核心设计动机：
+
+```text
+RDD 不是简单的数据容器，
+而是一份可分区、可延迟计算、可记录血缘、可失败重算的数据计算描述。
+```
+
+当前 Mini Spark 代码还很简单，但学习重点不是“代码多复杂”，而是“为什么要朝这个方向设计”。
+
+## 1. 先从最朴素的方案开始
+
+假设我们有一份数据：
+
+```python
+data = [1, 2, 3, 4]
+```
+
+我们想做：
+
+```text
+每个元素乘以 10
+保留大于 20 的元素
+统计剩下几个
+```
+
+用普通 Python 很容易写：
+
+```python
+data = [1, 2, 3, 4]
+
+mapped = [x * 10 for x in data]
+filtered = [x for x in mapped if x > 20]
+result = len(filtered)
+
+print(result)
+```
+
+输出：
+
+```text
+2
+```
+
+这个方案对小数据很好理解，也很好用。
+
+它的执行过程是：
+
+```text
+[1, 2, 3, 4]
+  ↓ 立刻执行 map，生成 mapped
+[10, 20, 30, 40]
+  ↓ 立刻执行 filter，生成 filtered
+[30, 40]
+  ↓ count
+2
+```
+
+这就是最朴素的设计：每一步都马上计算，并生成一个新的中间结果。
+
+## 2. 朴素方案遇到大数据会怎样
+
+如果数据只有 4 条，刚才的方案没有问题。
+
+但 Spark 要处理的不是 4 条数据，而可能是：
+
+- 4 亿条日志
+- 10 TB 明细数据
+- 分散在 100 台机器上的文件
+- 需要跑几十步转换的 ETL 链路
+
+这时朴素方案会遇到几个根本问题。
+
+### 问题 1：数据不能都放在 Driver 内存里
+
+普通 Python 列表默认在当前进程里。
+
+但真实 Spark 中，数据通常分布在很多机器上：
+
+```text
+Executor 1: 一部分数据
+Executor 2: 一部分数据
+Executor 3: 一部分数据
+...
+Driver: 只负责指挥
+```
+
+如果所有数据都拉到 Driver 变成一个大列表，Driver 很容易内存溢出。
+
+所以 Spark 需要一个抽象，它不能要求“数据都在本地”。
+
+### 问题 2：每一步都生成中间结果，代价太高
+
+朴素方案会生成：
+
+```text
+data
+mapped
+filtered
+```
+
+如果每份数据都很大，中间结果也会很大。
+
+这意味着：
+
+- 占用大量内存
+- 产生大量临时数据
+- 可能发生磁盘写入
+- 计算还没结束，资源已经被中间结果吃光
+
+Spark 需要一个抽象，能够先描述计算，而不是每一步都立刻物化中间结果。
+
+### 问题 3：系统看不到完整计算链路
+
+如果每一步都立刻执行，系统只看到：
+
+```text
+先 map
+再 filter
+再 count
+```
+
+但它很难站在全局看：
+
+```text
+这整个作业到底从哪里开始？
+中间有哪些依赖？
+哪些步骤可以合并？
+哪些步骤必须等待 Shuffle？
+哪些地方可以并行？
+失败后从哪里重算？
+```
+
+Spark 要做调度和优化，就必须先看到完整的计算描述。
+
+### 问题 4：失败后不知道怎么恢复
+
+假设 `mapped` 这个中间结果丢了。
+
+朴素方案通常只能说：
+
+```text
+那就从头再跑吧。
+```
+
+但 Spark 希望更聪明：
+
+```text
+哪个 Partition 丢了？
+它来自哪个父 RDD？
+用哪个函数能重新算出来？
+能不能只重算丢失的那一份？
+```
+
+这就要求数据抽象必须记录“我是怎么来的”。
+
+这个“怎么来的”，后面就叫 Lineage。
+
+## 3. RDD 是怎么被推导出来的
+
+现在我们把问题汇总一下。
+
+Spark 需要一种抽象，它至少要满足这些要求：
+
+```text
+1. 不能假设所有数据都在本地。
+2. 能把数据拆成多个分区，方便并行处理。
+3. Transformation 不急着执行，可以先记录计算计划。
+4. 能记录父子依赖，知道自己从哪里来。
+5. 失败后可以根据依赖关系重新计算。
+6. 对用户来说，还要像集合一样容易使用。
+```
+
+这就是 RDD 出现的背景。
+
+所以 RDD 不是“高级列表”。
+
+更准确地说，RDD 是：
+
+```text
+一份分布式数据的计算描述。
+```
+
+它描述的不只是“数据是什么”，还包括：
+
+- 数据分成几份
+- 每份数据怎么计算
+- 依赖哪个父 RDD
+- 用什么函数转换而来
+- 如果丢了怎么重新算
+
+这就是 RDD 的设计思想。
+
+## 4. 为什么 RDD 要不可变
+
+RDD 的一个重要特点是不可变。
+
+我们先反过来想：
+
+> 如果 RDD 可以被随便修改，会发生什么？
+
+假设：
+
+```python
+rdd1 = sc.parallelize([1, 2, 3])
+rdd2 = rdd1.map(lambda x: x * 10)
+```
+
+如果后面 `rdd1` 被修改了：
+
+```text
+rdd1 从 [1, 2, 3] 变成 [1, 2, 3, 4]
+```
+
+那 `rdd2` 到底应该基于哪个版本的 `rdd1`？
+
+```text
+基于修改前的 rdd1？
+还是基于修改后的 rdd1？
+```
+
+如果这个问题说不清，Lineage 就不可信。
+
+而 Lineage 是容错的基础：
+
+```text
+rdd2 的某个 Partition 丢了
+  ↓
+回到 rdd1
+  ↓
+重新执行 map
+```
+
+如果 `rdd1` 会变，重算出来的结果可能和第一次不一样。
+
+所以 RDD 不可变不是一种编程洁癖，而是为了解决这些问题：
+
+- 依赖关系稳定
+- 重算结果可预测
+- 多个子 RDD 可以安全共享同一个父 RDD
+- Scheduler 可以放心分析 DAG
+- 容错机制可以基于 Lineage 工作
+
+Mini Spark 第一阶段把输入数据转成 `tuple`，就是在模拟这种不可变思想。
+
+## 5. 为什么不是直接用 Iterator
+
+你可能会想：
+
+> 如果不想生成中间结果，用 Iterator 不就行了吗？
+
+Iterator 确实能解决一部分问题，比如延迟计算。
+
+但 Iterator 不够表达 Spark 需要的全部信息。
+
+Iterator 通常只知道：
+
+```text
+怎么一个接一个地产生数据。
+```
+
+但 Spark 还需要知道：
+
+```text
+数据分几个 Partition？
+这个计算依赖哪个父 RDD？
+这是窄依赖还是宽依赖？
+失败后从哪里恢复？
+要切几个 Stage？
+要生成多少 Task？
+```
+
+所以 RDD 可以使用 Iterator 做分区内计算，但 RDD 本身不能退化成 Iterator。
+
+RDD 是更高层的执行计划抽象。
+
+## 6. 为什么不是直接用分布式文件
+
+还有一种想法：
+
+> 数据本来就在 HDFS 或对象存储里，直接读文件不就行了吗？
+
+文件只描述“数据在哪里”，但不描述“数据将如何被计算”。
+
+Spark 需要的不只是文件路径，而是完整计算链：
+
+```text
+读取文件
+  ↓
+解析
+  ↓
+过滤
+  ↓
+聚合
+  ↓
+输出
+```
+
+RDD 把这些步骤串成可分析、可调度、可重算的链路。
+
+所以 RDD 不是替代文件系统，而是在文件系统之上表达计算过程。
+
+## 7. Mini Spark 当前怎么体现 RDD 思想
+
+现在 Mini Spark 已经比第一阶段复杂了，但你仍然可以从最小入口理解：
 
 ```python
 from mini_spark import SparkContext
@@ -24,350 +337,204 @@ print(rdd.collect())
 [1, 2, 3]
 ```
 
-你先把这一章理解成 Spark 学习的“开机仪式”：我们还没开始真正分布式计算，但先把 Spark 最基本的调用方式搭起来。
-
-## 1. 用人话理解这一章
-
-如果完全不懂 Spark，可以先这样理解：
-
-- `SparkContext`：Mini Spark 的入口。
-- `parallelize`：把普通 Python 数据放进 Mini Spark 世界。
-- `RDD`：Mini Spark 世界里的数据对象。
-- `collect`：把 Mini Spark 世界里的数据拿回 Python 程序。
-
-可以类比成：
+这段代码看起来很简单，但它已经埋下了后续设计的入口：
 
 ```text
-普通 Python 列表
+普通 Python 数据
   ↓ parallelize
-Mini Spark 里的 RDD
-  ↓ collect
-普通 Python 列表
+Root RDD
+  ↓ Transformation
+Derived RDD
+  ↓ Action
+触发执行
 ```
 
-现在我们的 Mini Spark 还很小，所以 `RDD` 里面只是保存了一份本地数据。
+当前 `SparkContext.parallelize` 的职责是创建 Root RDD。
 
-真实 Spark 里的 RDD 要复杂得多：它的数据可能分散在很多机器上，并且 RDD 通常不直接保存完整数据，而是保存“怎么得到这些数据”的计算信息。
+现在的 RDD 已经可以记录：
 
-## 2. 最小示例：先跑起来
+- Partition
+- parent
+- transform
+- operation
+- dependency kind
+- cache
+- lineage
 
-你可以运行：
+但第一章只需要先理解：
+
+> RDD 是 Spark 用来描述分布式计算的核心抽象，不是普通列表。
+
+## 8. 跑一个最小例子
+
+运行：
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -c "from mini_spark import SparkContext; sc = SparkContext(); rdd = sc.parallelize([1, 2, 3]); print(rdd.collect())"
 ```
 
-应该看到：
+输出：
 
 ```text
 [1, 2, 3]
 ```
 
-这说明目前的最小流程已经跑通：
+这个例子只证明一件事：
 
 ```text
-创建 SparkContext
-  ↓
-parallelize 创建 RDD
-  ↓
-collect 取回数据
+我们已经有了创建 RDD 和取回结果的最小闭环。
 ```
 
-## 3. 逐行解释代码
+它不是完整 Spark，但它是理解后续所有设计的起点。
 
-### 第 1 行：导入 SparkContext
+## 9. 逐行解释代码
 
-```python
-from mini_spark import SparkContext
-```
-
-这行表示：从我们自己的 `mini_spark` 包里拿到 `SparkContext`。
-
-在真实 PySpark 里，你也会经常看到类似入口，只是实际项目中更多会通过 `SparkSession` 使用 Spark。
-
-### 第 2 行：创建入口对象
+### 创建 SparkContext
 
 ```python
 sc = SparkContext()
 ```
 
-`sc` 是 SparkContext 的实例。
+`SparkContext` 是入口。
 
-你可以把它理解成“Mini Spark 的控制台”。后面我们要创建 RDD，就从它开始。
+在真实 Spark 中，它背后会连接集群、管理配置、申请资源、提交 Job。
 
-真实 Spark 中，`SparkContext` 背后会连接集群、管理配置、申请资源、提交任务。现在我们的版本只做一件事：创建 RDD。
+在 Mini Spark 中，它先只负责创建 RDD。
 
-### 第 3 行：把 Python 列表变成 RDD
+### 创建 RDD
 
 ```python
 rdd = sc.parallelize([1, 2, 3])
 ```
 
-`[1, 2, 3]` 原本只是普通 Python 列表。
+这行把普通 Python 数据变成 RDD。
 
-调用 `parallelize` 后，它被包装成一个 `RDD` 对象。
+重点不是“包装了一层对象”。
 
-当前阶段你可以先理解成：
-
-```text
-[1, 2, 3]  ->  RDD(_data=(1, 2, 3))
-```
-
-这里 `_data=(1, 2, 3)` 是我们 Mini Spark 内部保存的数据。
-
-### 第 4 行：把 RDD 数据取回来
-
-```python
-print(rdd.collect())
-```
-
-`collect()` 的意思是：把 RDD 中的数据收集回来，变成普通 Python 列表。
-
-当前输出是：
+重点是：
 
 ```text
-[1, 2, 3]
+从这一刻开始，这份数据进入了 Spark 的计算模型。
 ```
 
-在真实 Spark 中，`collect()` 很重要，也很危险。因为它会把分布在 Executor 上的数据全部拉回 Driver。如果数据很大，Driver 可能直接内存爆掉。
-
-## 4. Mini Spark 内部发生了什么
-
-### 4.1 SparkContext 做了什么
-
-代码在 [mini_spark/context.py](../mini_spark/context.py)：
+它后面可以继续接：
 
 ```python
-from collections.abc import Iterable
-from typing import TypeVar
-
-from mini_spark.rdd import RDD
-
-T = TypeVar("T")
-
-
-class SparkContext:
-    """Entry point for creating Mini Spark RDDs."""
-
-    def parallelize(self, data: Iterable[T]) -> RDD[T]:
-        return RDD(data)
+rdd.map(...)
+rdd.filter(...)
+rdd.count()
 ```
 
-重点只有这一行：
+这些操作就不再只是普通 Python 列表操作，而是会形成一条可追踪的计算链。
+
+### collect
 
 ```python
-return RDD(data)
+rdd.collect()
 ```
 
-意思是：`parallelize` 不做复杂事情，它只是把输入数据交给 `RDD` 类，创建一个 RDD 对象。
+`collect()` 是 Action。
 
-### 4.2 RDD 做了什么
-
-代码在 [mini_spark/rdd.py](../mini_spark/rdd.py)。
-
-第一阶段最重要的是这两个能力：
-
-```python
-self._data = tuple(data) if data is not None else None
-```
-
-以及：
-
-```python
-def collect(self) -> list[T]:
-    return list(self._compute())
-```
-
-你可以先抓住两个点：
-
-1. RDD 内部把数据转成 `tuple`。
-2. `collect()` 把内部数据转回 `list`。
-
-为什么要转成 `tuple`？
-
-因为 `tuple` 不可变。我们想让 RDD 有“不可变”的感觉。
-
-试一下：
-
-```python
-from mini_spark import SparkContext
-
-sc = SparkContext()
-source = [1, 2, 3]
-
-rdd = sc.parallelize(source)
-source.append(4)
-
-print(rdd.collect())
-```
-
-输出是：
+它的意思不是“打印”，而是：
 
 ```text
-[1, 2, 3]
+请把 RDD 的结果真正计算出来，并收集回 Driver。
 ```
 
-虽然外面的 `source` 被改成了 `[1, 2, 3, 4]`，但 RDD 不受影响。
+真实 Spark 中，`collect()` 会把分布在 Executor 上的数据拉回 Driver，所以大数据上要谨慎使用。
 
-这就是不可变性的第一层意义：创建好的 RDD 不应该被外部数据变化偷偷影响。
+## 10. 设计收益与设计代价
 
-## 5. 什么是 RDD
+### 收益
 
-RDD 全称是 Resilient Distributed Dataset，通常翻译成“弹性分布式数据集”。
+RDD 设计带来的收益：
 
-这个名字很吓人，我们拆开看：
+- 可以表达分布式数据。
+- 可以按 Partition 并行处理。
+- 可以用 Transformation 描述计算链。
+- 可以用 Lineage 做容错。
+- 可以让 Scheduler 分析 DAG。
+- 可以把用户 API 和底层执行解耦。
 
-- Dataset：它表示一组数据。
-- Distributed：真实 Spark 中，这组数据可以分布在多台机器上。
-- Resilient：如果一部分数据丢了，Spark 可以根据依赖关系重新算出来。
+### 代价
 
-但在第一阶段，我们只实现了最简单的 Dataset：
+RDD 也不是没有代价：
+
+- 对新手来说，比普通列表更抽象。
+- Lazy Evaluation 会让“代码写了但没执行”这件事变得不直观。
+- 用户需要理解 Action、Transformation、Partition、Shuffle 等概念。
+- 如果使用不当，比如乱 `collect()` 或乱 `groupByKey`，仍然会有性能问题。
+
+好的设计通常不是“没有代价”，而是在一组矛盾中做权衡。
+
+RDD 的权衡是：
 
 ```text
-RDD = 包着一份本地数据的对象
+牺牲一点直观性，
+换来分布式执行、容错和调度优化的可能性。
 ```
 
-后面我们会逐步补上：
+## 11. 对照真实 Spark
 
-- Transformation：RDD 怎么生成新的 RDD。
-- Lineage：RDD 怎么记录父子关系。
-- Partition：RDD 的数据怎么拆分。
-- Scheduler：RDD 的计算怎么被调度。
-- Fault Tolerance：RDD 丢了怎么重算。
+| 设计问题 | Mini Spark 当前做法 | 真实 Spark 做法 |
+| --- | --- | --- |
+| 数据太大不能放 Driver | 后续用 Partition 表达多份数据 | 数据分布在 Executor 的 Partition 上 |
+| 每步立刻执行代价高 | Transformation 记录 transform | Lazy Evaluation 构建完整 DAG |
+| 失败后如何恢复 | Lineage 可重算 | 根据 RDD dependency 重新提交 Task |
+| 如何并行 | 本地 Scheduler 模拟 Task | DAGScheduler + TaskScheduler + Executor |
+| 如何跨分区聚合 | 简化 Shuffle | Shuffle Write / Shuffle Read / Map-side Combine |
 
-## 6. 什么是 Driver
+Mini Spark 不是为了复刻 Spark 所有工程细节，而是把 Spark 的设计思想拆成能理解的小块。
 
-现在你写的 Python 程序就是 Driver。
+## 12. 常见误解
 
-比如：
+### 误解 1：RDD 就是分布式列表
 
-```python
-sc = SparkContext()
-rdd = sc.parallelize([1, 2, 3])
-print(rdd.collect())
-```
+这个说法太浅。
 
-这段代码所在的进程，就是 Driver。
+RDD 看起来像集合，但它更重要的是记录计算关系。
 
-Driver 负责：
-
-- 写 Spark 程序。
-- 创建 RDD。
-- 触发 Action。
-- 接收 `collect()` 返回的结果。
-
-真实 Spark 中还会有 Executor。Executor 负责真正处理分区数据。当前 Mini Spark 还没有 Executor，所以所有事情都在 Driver 本地完成。
-
-## 7. 为什么 collect 是 Action
-
-Spark 里有两类常见操作：
-
-- Transformation：描述要怎么变，比如 `map`、`filter`。
-- Action：真的要结果，比如 `collect`、`count`。
-
-`collect()` 是 Action，因为它会要求 Spark：
-
-> 现在请真的把数据算出来，并返回给我。
-
-在第一阶段，我们还没有 Transformation，所以 `collect()` 看起来只是返回内部数据。
-
-但先把它定义成 Action 很重要。因为第二阶段开始，`map`、`filter` 不会立即执行，只有 `collect()` 才会触发计算。
-
-## 8. 对照真实 Spark
-
-| Mini Spark 当前版本 | 真实 Spark |
-| --- | --- |
-| `SparkContext` 只负责创建 RDD | `SparkContext` 还负责连接集群、提交 Job、管理资源 |
-| `RDD` 内部保存本地 `tuple` | RDD 通常保存分区、依赖和计算逻辑 |
-| `collect()` 直接返回本地数据 | `collect()` 会触发 Job，把 Executor 上的数据拉回 Driver |
-| 没有 Partition | 真实 RDD 由多个 Partition 组成 |
-| 没有 Executor | 真实 Spark 在 Executor 上并行执行任务 |
-
-所以你要记住：
-
-> Mini Spark 是为了学习 Spark 思想，不是为了模拟完整 Spark 工程实现。
-
-## 9. 亲手实验
-
-### 实验 1：确认 RDD 不受外部列表影响
-
-运行：
-
-```powershell
-& '.\.venv\Scripts\python.exe' -c "from mini_spark import SparkContext; sc = SparkContext(); source = [1, 2, 3]; rdd = sc.parallelize(source); source.append(4); print(source); print(rdd.collect())"
-```
-
-你会看到：
+更准确地说：
 
 ```text
-[1, 2, 3, 4]
-[1, 2, 3]
+RDD 是分布式数据的计算描述。
 ```
 
-这说明 RDD 创建时已经保存了自己的数据。
+### 误解 2：RDD 只是老 API，学 DataFrame 就不用懂了
 
-### 实验 2：确认 collect 返回的是新列表
+不对。
 
-运行：
+现在很多 Spark 开发确实更多使用 DataFrame 和 Spark SQL，但底层的很多概念仍然绕不开：
 
-```powershell
-& '.\.venv\Scripts\python.exe' -c "from mini_spark import SparkContext; sc = SparkContext(); rdd = sc.parallelize([1, 2, 3]); result = rdd.collect(); result.append(4); print(result); print(rdd.collect())"
-```
+- Partition
+- Shuffle
+- Stage
+- Task
+- Cache
+- Fault Tolerance
 
-你会看到：
+理解 RDD，是理解 Spark 执行模型的地基。
 
-```text
-[1, 2, 3, 4]
-[1, 2, 3]
-```
+### 误解 3：RDD 不可变只是函数式编程风格
 
-这说明你修改 `collect()` 返回的列表，不会影响 RDD 内部数据。
+不只是风格。
 
-## 10. 常见误解
+不可变是为了让依赖关系稳定，让 Lineage 和重算可信。
 
-### 误解 1：RDD 就是 Python 列表
+## 13. 本章掌握标准
 
-不是。
+如果你能讲清楚下面这些话，就算这一章过关：
 
-当前 Mini Spark 的 RDD 很像列表，是因为我们还在第一阶段。
+- 普通列表方案在大数据、分布式、容错场景下不够用。
+- RDD 不是普通数据容器，而是分布式计算描述。
+- RDD 需要记录 Partition、父依赖、转换逻辑和血缘关系。
+- RDD 不可变是为了让依赖和重算稳定可靠。
+- Lazy Evaluation、Lineage、Partition、Scheduler 都是围绕 RDD 这个抽象展开的。
 
-真实 Spark 的 RDD 更像一张“计算说明书”：它知道数据分几份、从哪里来、怎么计算出来。
+## 14. 思考题
 
-### 误解 2：collect 只是打印数据
-
-不是。
-
-`collect()` 的含义是“把 RDD 的数据收集到 Driver”。
-
-打印只是我们为了观察结果额外做的事情。
-
-### 误解 3：collect 很安全
-
-不一定。
-
-小数据可以 `collect()`。大数据不要随便 `collect()`，因为真实 Spark 会把所有数据拉回 Driver。
-
-实战中更常用：
-
-- `take(n)`：取少量数据。
-- `show(n)`：DataFrame 中查看少量数据。
-- 写入文件或表，而不是全部拉回本地。
-
-## 11. 本章掌握标准
-
-如果你能用自己的话说清楚下面几句话，就算这一章过关：
-
-- `SparkContext` 是 Mini Spark 的入口。
-- `parallelize` 把普通 Python 数据包装成 RDD。
-- 当前 RDD 内部用 `tuple` 保存数据，是为了避免外部修改影响 RDD。
-- `collect()` 把 RDD 数据取回 Driver。
-- 真实 Spark 中，RDD 不是简单列表，而是带有分区、依赖和计算逻辑的数据抽象。
-- 真实 Spark 中，`collect()` 拉回大数据可能导致 Driver 内存问题。
-
-## 12. 思考题
-
-1. 为什么 `SparkContext` 适合作为创建 RDD 的入口？
-2. 为什么当前实现要把输入数据转成 `tuple`？
-3. 为什么 `collect()` 返回的是新的 `list`，而不是直接暴露内部数据？
-4. 真实 Spark 中，`collect()` 为什么可能很危险？
-5. 当前 Mini Spark 的 `RDD` 和真实 Spark 的 `RDD` 最大区别是什么？
+1. 如果每个 Transformation 都立刻生成中间结果，大数据场景会有什么问题？
+2. 为什么 RDD 不能只是一个 Iterator？
+3. 为什么 RDD 不可变对容错很重要？
+4. 为什么 Spark 需要知道完整计算链路？
+5. 你现在怎么用自己的话解释 RDD，而不是背定义？
